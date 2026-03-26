@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/neuxdotdev/libplcdocx"
 keywords = ["docx", "placeholder", "template", "framework", "word"]
 categories = ["text-processing", "parser-implementations"]
-readme = "README.md"
+readme = "readme"
 
 [dependencies]
 zip = { version = "2.2", features = ["deflate"] }
