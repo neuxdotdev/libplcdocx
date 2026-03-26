@@ -1,0 +1,37 @@
+[package]
+name = "libplcdocx"
+version = "0.2.0"
+edition = "2024"
+description = "A robust Rust framework for placeholder replacement in DOCX files"
+authors = ["neuxdotdev"]
+license = "MIT"
+repository = "https://github.com/neuxdotdev/libplcdocx"
+keywords = ["docx", "placeholder", "template", "framework", "word"]
+categories = ["text-processing", "parser-implementations"]
+readme = "README.md"
+
+[dependencies]
+zip = { version = "2.2", features = ["deflate"] }
+quick-xml = { version = "0.37", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+chrono = { version = "0.4", features = ["clock"] }
+thiserror = "2.0"
+tracing = "0.1"
+dirs = { version = "5.0", optional = true }
+
+[dev-dependencies]
+tempfile = "3.10"
+proptest = "1.4"
+assert_fs = "1.1"
+
+[features]
+default = ["config-helpers"]
+config-helpers = ["dirs"]
+debug = ["tracing/max_level_trace"]
+strict = []
+xml = ["dep:quick-xml"]
+
+[lints.rust]
+unsafe_code = "forbid"
