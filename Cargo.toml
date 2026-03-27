@@ -1,6 +1,6 @@
 [package]
 name = "libplcdocx"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A robust Rust framework for placeholder replacement in DOCX files"
 authors = ["neuxdotdev"]
