@@ -20,6 +20,7 @@ chrono = { version = "0.4", features = ["clock"] }
 thiserror = "2.0"
 tracing = "0.1"
 dirs = { version = "5.0", optional = true }
+tempfile = "3.10"
 
 [dev-dependencies]
 tempfile = "3.10"

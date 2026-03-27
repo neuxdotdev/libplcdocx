@@ -10,4 +10,5 @@ pub use framework::resolver::PlaceholderResolver;
 pub use handler::config::{Config, DateFormat, PlaceholderSyntax, ProcessingMode, TimeFormat};
 pub use handler::error::{Error, Result};
 pub use handler::types::{PlaceholderKey, ReplacementValue};
+pub use handler::io;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

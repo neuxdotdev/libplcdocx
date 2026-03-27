@@ -9,9 +9,9 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use tracing::{debug, info, warn};
+use zip::CompressionMethod;
 use zip::read::ZipArchive;
 use zip::write::{FileOptions, ZipWriter};
-use zip::CompressionMethod;
 const DOCX_TEXT_FILES: &[&str] = &[
     "word/document.xml",
     "word/header1.xml",
@@ -136,7 +136,8 @@ impl Engine {
             if self.config.security_checks {
                 self.validate_zip_path(&file_name)?;
             }
-            let options: FileOptions<'_, ()> = FileOptions::default().compression_method(CompressionMethod::Deflated);
+            let options: FileOptions<'_, ()> =
+                FileOptions::default().compression_method(CompressionMethod::Deflated);
             writer.start_file(&file_name, options)?;
             let mut modified = false;
             if self.should_process_file(&file_name) {
@@ -148,7 +149,8 @@ impl Engine {
                         ctx.template_path.clone(),
                         ctx.output_path.clone(),
                         ctx.config.clone(),
-                    ).with_current_file(file_name.clone());
+                    )
+                    .with_current_file(file_name.clone());
                     let resolved = self.replace_placeholders_dynamic(&contents, &file_ctx)?;
                     writer.write_all(resolved.as_bytes())?;
                     total_placeholders += placeholder_count;
@@ -170,7 +172,8 @@ impl Engine {
                 ctx.template_path.clone(),
                 ctx.output_path.clone(),
                 ctx.config.clone(),
-            ).with_current_file(file_name);
+            )
+            .with_current_file(file_name);
             self.hooks.on_after_file(&file_ctx, modified)?;
         }
         Ok((processed_files, total_placeholders))
