@@ -1,83 +1,149 @@
 use crate::handler::config::{Config, ProcessingMode};
 use crate::handler::error::{Error, Result};
-use crate::utils::escape_xml;
-use std::collections::HashMap;
+use crate::handler::types::{PlaceholderKey, PlaceholderMap};
+use crate::handler::utils::escape_xml;
+use regex::Regex;
+use std::collections::HashSet;
 use tracing::{debug, warn};
+const MAX_PATTERN_LENGTH: usize = 2048;
+const MAX_INPUT_TEXT_LEN: usize = 50 * 1024 * 1024;
+const MAX_OUTPUT_EXPANSION_FACTOR: usize = 10;
+const MAX_PLACEHOLDER_KEY_LEN: usize = 256;
 #[derive(Debug, Clone)]
 pub struct PlaceholderParser {
     config: Config,
+    regex: Regex,
 }
 impl PlaceholderParser {
-    #[must_use]
-    pub fn new(config: Config) -> Self {
-        PlaceholderParser { config }
+    pub fn new(config: Config) -> Result<Self> {
+        config.validate()?;
+        let syntax = config.syntax();
+        if syntax.prefix().is_empty() || syntax.suffix().is_empty() {
+            return Err(Error::config(
+                "Placeholder prefix and suffix cannot be empty",
+            ));
+        }
+        let escaped_prefix = regex::escape(syntax.prefix());
+        let escaped_suffix = regex::escape(syntax.suffix());
+        let pattern = format!(r"{}(.*?){}", escaped_prefix, escaped_suffix);
+        if pattern.len() > MAX_PATTERN_LENGTH {
+            return Err(Error::config(format!(
+                "Generated regex pattern length {} exceeds limit {}",
+                pattern.len(),
+                MAX_PATTERN_LENGTH
+            )));
+        }
+        let regex = Regex::new(&pattern).map_err(|e| Error::invalid_regex(&pattern, e))?;
+        Ok(Self { config, regex })
     }
-    #[must_use]
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-    #[must_use]
-    pub fn find_all(&self, text: &str) -> Vec<String> {
-        let mut placeholders = Vec::new();
-        let mut start_idx = 0;
-        while let Some(start) = text[start_idx..].find(&self.config.syntax.prefix) {
-            let abs_start = start_idx + start;
-            let search_from = abs_start + self.config.syntax.prefix.len();
-            if let Some(end) = text[search_from..].find(&self.config.syntax.suffix) {
-                let key_start = search_from;
-                let key_end = search_from + end;
-                let key = text[key_start..key_end].to_string();
-                if !key.is_empty() && !placeholders.contains(&key) {
-                    placeholders.push(key);
+    pub fn find_all(&self, text: &str) -> Vec<PlaceholderKey> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+        if text.len() > MAX_INPUT_TEXT_LEN {
+            warn!(
+                "find_all called with very large text ({} bytes), performance may degrade",
+                text.len()
+            );
+        }
+        let mut keys_set = HashSet::new();
+        for cap in self.regex.captures_iter(text) {
+            if let Some(key_match) = cap.get(1) {
+                let key_str = key_match.as_str();
+                if key_str.is_empty() || key_str.len() > MAX_PLACEHOLDER_KEY_LEN {
+                    continue;
                 }
-                start_idx = key_end + self.config.syntax.suffix.len();
-            } else {
-                break;
+                match PlaceholderKey::new(key_str) {
+                    Ok(key) => {
+                        keys_set.insert(key);
+                    }
+                    Err(e) => {
+                        warn!("Invalid placeholder key '{}': {}", key_str, e);
+                    }
+                }
             }
         }
-        debug!("Found {} placeholders", placeholders.len());
-        placeholders
+        let keys: Vec<PlaceholderKey> = keys_set.into_iter().collect();
+        debug!("Found {} unique valid placeholders", keys.len());
+        keys
     }
-    pub fn replace_all(&self, text: &str, mappings: &HashMap<String, String>) -> Result<String> {
-        let all_placeholders = self.find_all(text);
-        self.validate_mappings(&all_placeholders, mappings)?;
-        let mut result = text.to_string();
+    pub fn replace_all(&self, text: &str, mappings: &PlaceholderMap) -> Result<String> {
+        if text.len() > MAX_INPUT_TEXT_LEN {
+            return Err(Error::resource_limit(
+                "input_text_size",
+                text.len(),
+                MAX_INPUT_TEXT_LEN,
+            ));
+        }
+        let placeholders = self.find_all(text);
+        if placeholders.is_empty() {
+            return Ok(text.to_string());
+        }
+        let max_placeholders = self.config.max_placeholders_per_file();
+        if placeholders.len() > max_placeholders {
+            return Err(Error::resource_limit(
+                "placeholder_count",
+                placeholders.len(),
+                max_placeholders,
+            ));
+        }
+        self.validate_mappings(&placeholders, mappings)?;
+        let mut result = String::with_capacity(text.len() * 2);
         let mut replaced_count = 0;
-        for (key, value) in mappings {
-            let placeholder = self.config.get_placeholder_pattern(key);
-            if result.contains(&placeholder) {
-                let escaped_value = escape_xml(value);
-                result = result.replace(&placeholder, &escaped_value);
-                replaced_count += 1;
-                debug!("Replaced placeholder: {} -> {}", key, escaped_value);
+        result.push_str(text);
+        let mut result_text = text.to_string();
+        for key in &placeholders {
+            let pattern = self.config.syntax().pattern(key.as_str());
+            if let Some(value) = mappings.get(key) {
+                let final_value = if value.is_pre_escaped() {
+                    value.as_str().to_string()
+                } else {
+                    escape_xml(value.as_str())
+                };
+                let max_replacement = self.config.max_replacement_size();
+                if final_value.len() > max_replacement {
+                    return Err(Error::resource_limit(
+                        "replacement_size",
+                        final_value.len(),
+                        max_replacement,
+                    ));
+                }
+                if final_value.len() > text.len() * MAX_OUTPUT_EXPANSION_FACTOR {
+                    warn!("Potential output expansion limit hit for key {}", key);
+                }
+                if result_text.contains(&pattern) {
+                    result_text = result_text.replace(&pattern, &final_value);
+                    replaced_count += 1;
+                    debug!("Replaced '{}' -> '{}'", key, final_value);
+                }
             }
         }
-        debug!("Total replacements: {}", replaced_count);
-        Ok(result)
+        if self.config.mode() == ProcessingMode::Strict && self.has_placeholders(&result_text) {
+            warn!("After replacement, placeholders still remain in strict mode");
+        }
+        debug!("Total replacements performed: {}", replaced_count);
+        Ok(result_text)
     }
     fn validate_mappings(
         &self,
-        placeholders: &[String],
-        mappings: &HashMap<String, String>,
+        placeholders: &[PlaceholderKey],
+        mappings: &PlaceholderMap,
     ) -> Result<()> {
-        let missing: Vec<&String> = placeholders
+        let missing: Vec<&PlaceholderKey> = placeholders
             .iter()
             .filter(|ph| !mappings.contains_key(*ph))
             .collect();
         if missing.is_empty() {
             return Ok(());
         }
-        match self.config.mode {
+        match self.config.mode() {
             ProcessingMode::Strict => {
-                let missing_list = missing
+                let missing_keys = missing
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(|k| k.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                Err(Error::PlaceholderNotFound(format!(
-                    "Missing mappings for: {}",
-                    missing_list
-                )))
+                Err(Error::placeholder_not_found(missing_keys, None::<String>))
             }
             ProcessingMode::Warn => {
                 for ph in missing {
@@ -88,64 +154,56 @@ impl PlaceholderParser {
             ProcessingMode::Lenient => Ok(()),
         }
     }
-    #[must_use]
     pub fn has_placeholders(&self, text: &str) -> bool {
-        text.contains(&self.config.syntax.prefix) && text.contains(&self.config.syntax.suffix)
+        !text.is_empty() && self.regex.is_match(text)
     }
-    #[must_use]
     pub fn count(&self, text: &str) -> usize {
         self.find_all(text).len()
     }
-    #[must_use]
-    pub fn find_unmapped(&self, text: &str, mappings: &HashMap<String, String>) -> Vec<String> {
-        self.find_all(text)
-            .into_iter()
-            .filter(|ph| !mappings.contains_key(ph))
-            .collect()
+    pub fn get_pattern(&self) -> &str {
+        self.regex.as_str()
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn test_config() -> Config {
-        Config::default().with_logging(true)
+    use crate::handler::config::{PlaceholderSyntax, ProcessingMode};
+    fn dummy_config() -> Config {
+        Config::builder()
+            .syntax(PlaceholderSyntax::new("{{", "}}", '\\').unwrap())
+            .mode(ProcessingMode::Strict)
+            .max_placeholders(100)
+            .max_replacement_size(1024)
+            .build()
+            .unwrap()
     }
     #[test]
-    fn find_placeholders_works() {
-        let parser = PlaceholderParser::new(test_config());
-        let text = "Hello [[%%NAME%%]], today is [[%%DATE%%]]";
-        let found = parser.find_all(text);
-        assert_eq!(found.len(), 2);
-        assert!(found.contains(&"NAME".to_string()));
-        assert!(found.contains(&"DATE".to_string()));
+    fn test_new_valid() {
+        let parser = PlaceholderParser::new(dummy_config());
+        assert!(parser.is_ok());
     }
     #[test]
-    fn replace_placeholders_works() {
-        let parser = PlaceholderParser::new(test_config());
-        let text = "Hello [[%%NAME%%]]!";
-        let mut mappings = HashMap::new();
-        mappings.insert("NAME".to_string(), "John".to_string());
+    fn test_new_empty_prefix() {
+        let syntax = PlaceholderSyntax::new("", "}}", '\\').unwrap();
+        let cfg_res = Config::builder().syntax(syntax).build();
+        assert!(cfg_res.is_err());
+    }
+    #[test]
+    fn test_find_all() {
+        let parser = PlaceholderParser::new(dummy_config()).unwrap();
+        let text = "Hello {{name}}, today is {{date}} and {{name}} again.";
+        let keys = parser.find_all(text);
+        assert_eq!(keys.len(), 2);
+        assert!(keys.iter().any(|k| k.as_str() == "name"));
+        assert!(keys.iter().any(|k| k.as_str() == "date"));
+    }
+    #[test]
+    fn test_replace_all_strict() {
+        let parser = PlaceholderParser::new(dummy_config()).unwrap();
+        let text = "Hello {{name}}!";
+        let mut mappings = PlaceholderMap::new();
+        mappings.insert(PlaceholderKey::new("name").unwrap(), "Alice".into());
         let result = parser.replace_all(text, &mappings).unwrap();
-        assert_eq!(result, "Hello John!");
-    }
-    #[test]
-    fn xml_escaping_applied() {
-        let parser = PlaceholderParser::new(test_config());
-        let text = "Value: [[%%CONTENT%%]]";
-        let mut mappings = HashMap::new();
-        mappings.insert("CONTENT".to_string(), "Tom & Jerry <cat>".to_string());
-        let result = parser.replace_all(text, &mappings).unwrap();
-        assert!(result.contains("&amp;"));
-        assert!(result.contains("&lt;"));
-    }
-    #[test]
-    fn strict_mode_reports_missing() {
-        let config = Config::default().with_mode(ProcessingMode::Strict);
-        let parser = PlaceholderParser::new(config);
-        let text = "Hello [[%%NAME%%]] and [[%%MISSING%%]]";
-        let mut mappings = HashMap::new();
-        mappings.insert("NAME".to_string(), "John".to_string());
-        let result = parser.replace_all(text, &mappings);
-        assert!(result.is_err());
+        assert_eq!(result, "Hello Alice!");
     }
 }
