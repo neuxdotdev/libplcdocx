@@ -1,14 +1,12 @@
 pub mod core;
 pub mod framework;
 pub mod handler;
-pub mod utils;
 pub use core::engine::{Engine, EngineBuilder};
 pub use core::parser::PlaceholderParser;
 pub use framework::context::ProcessingContext;
-pub use framework::hooks::{DocxHooks, HookResult};
+pub use framework::hooks::{DocxHooks, HookResult, NoopHooks};
 pub use framework::resolver::PlaceholderResolver;
 pub use handler::config::{Config, DateFormat, PlaceholderSyntax, ProcessingMode, TimeFormat};
 pub use handler::error::{Error, Result};
-pub use handler::types::{PlaceholderKey, ReplacementValue};
-pub use handler::io;
+pub use handler::types::{PlaceholderKey, PlaceholderMap, ReplacementValue};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
