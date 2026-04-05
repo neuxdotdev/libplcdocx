@@ -307,7 +307,3 @@ This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) f
 > **Repository**: https://github.com/neuxdotdev/libplcdocx  
 > **Crates.io**: https://crates.io/crates/libplcdocx  
 > **Documentation**: https://docs.rs/libplcdocx
-
-```
-
-```
